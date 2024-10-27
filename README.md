@@ -1,1 +1,1 @@
-# TUM-MSc-thesis-Monocular-Depth-Estimation-by-Domain-Transfer-Using-Rigid-Transformations
+# MSc Thesis (TUM): "Monocular Depth Estimation by Domain Transfer using Rigid Trasnformations"
