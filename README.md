@@ -1,5 +1,6 @@
-This is the code base for Dan Halperin's thesis: "Monocular Depth Estimation by Domain Transfer Using Rigid Transformations" (10/2024).
-It is the cleaned reposetory and at the state of the last experiment - n-dim rotations between two latent spaces.
+This is the code base for Dan Halperin's thesis: "Monocular Depth Estimation by Domain Transfer Using Rigid Transformations" (10/2024). This thesis work was written under the TUM - Institute of Automotive Technology (https://github.com/TUMFTM).
+
+ **Attached you may also find the written thesis file.**
 
 In this repo, you can find the PyTorch implementations of all the used functions:
 1. CBAM
@@ -16,7 +17,6 @@ To the the code, ensure your working directory is the parent directory os "src".
 2. Run testing: "python/main/prints.py":
     - at the header of that file, you'll need to fill the directory of where the "src" is located and set the checkpoint to the desired one (the path to it).
  
-
 The dataset is currently not publicly available. This repo is meant only to show the code structure and the model's architecture.
 
 
