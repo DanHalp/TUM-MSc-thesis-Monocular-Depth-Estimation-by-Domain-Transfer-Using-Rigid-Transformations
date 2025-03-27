@@ -1,0 +1,842 @@
+import sys, os
+
+from pathlib import Path
+from scipy import stats
+
+sys.path.append(os.getcwd())
+sys.path.append(os.path.dirname(__file__))
+sys.path.append(str(Path(os.path.abspath(__file__)).parents[3]))
+sys.path.append(str(Path(os.path.abspath(__file__)).parents[2]))
+sys.path.append(str(Path(os.path.abspath(__file__)).parents[1]))
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from util_moduls.args import args
+import cv2
+import numpy as np
+# from pytorch_msssim import SSIM
+import math
+
+import torch
+import math
+
+
+
+        
+class CosineSimilarityLoss(nn.Module):
+    def __init__(self):
+        super(CosineSimilarityLoss, self).__init__()
+        self.cosine_similarity = nn.CosineSimilarity(dim=1, eps=1e-6)
+
+    def forward(self, output, target):
+        # Ensure the target is normalized
+        target_norm = target / (torch.norm(target, dim=1, keepdim=True) + 1e-6)
+        cos_sim = self.cosine_similarity(output, target_norm)
+        return 1 - cos_sim.mean()  # We subtract cos_sim from 1 to get a loss that is lower for more similar vectors
+
+class GeodesicLoss(nn.Module):
+    r"""Creates a criterion that measures the distance between rotation matrices, which is
+    useful for pose estimation problems.
+    The distance ranges from 0 to :math:`pi`.
+    See: http://www.boris-belousov.net/2016/12/01/quat-dist/#using-rotation-matrices and:
+    "Metrics for 3D Rotations: Comparison and Analysis" (https://link.springer.com/article/10.1007/s10851-009-0161-2).
+
+    Both `input` and `target` consist of rotation matrices, i.e., they have to be Tensors
+    of size :math:`(minibatch, 3, 3)`.
+
+    The loss can be described as:
+
+    .. math::
+        \text{loss}(R_{S}, R_{T}) = \arccos\left(\frac{\text{tr} (R_{S} R_{T}^{T}) - 1}{2}\right)
+
+    Args:
+        eps (float, optional): term to improve numerical stability (default: 1e-7). See:
+            https://github.com/pytorch/pytorch/issues/8069.
+
+        reduction (string, optional): Specifies the reduction to apply to the output:
+            ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction will
+            be applied, ``'mean'``: the weighted mean of the output is taken,
+            ``'sum'``: the output will be summed. Default: ``'mean'``
+
+    Shape:
+        - Input: Shape :math:`(N, 3, 3)`.
+        - Target: Shape :math:`(N, 3, 3)`.
+        - Output: If :attr:`reduction` is ``'none'``, then :math:`(N)`. Otherwise, scalar.
+        
+        !!!!!!!!!!!!!!!!!!!!!!!!! NOTE: Works only for 3D rotaitons, and not for any n > 3 !!!!!!!!!!!!!!!!!!!!!!!!
+    """
+
+    def __init__(self, eps: float = 1e-7, reduction: str = "mean") -> None:
+        super().__init__()
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        R_diffs = torch.matmul(input, target.transpose(-2, -1))
+        # See: https://github.com/pytorch/pytorch/issues/7500#issuecomment-502122839.
+        traces = R_diffs.diagonal(dim1=-2, dim2=-1).sum(-1)
+        dists = torch.acos(torch.clamp((traces - 1) / 2, -1 + self.eps, 1 - self.eps))
+        if self.reduction == "none":
+            return dists
+        elif self.reduction == "mean":
+            return dists.mean()
+        elif self.reduction == "sum":
+            return dists.sum()
+
+def rmse_loss(pred, target, eps=1e-8):
+    return torch.sqrt(F.mse_loss(pred, target) + eps)
+
+
+
+    
+
+def GAN_loss(real, fake, discriminator, real_optimizer, fake_optimizer, real_scheduler, fake_scheduler):
+    """
+    Calculates the GAN loss for the discriminator.
+
+    Args:
+    real: Tensor of real images, shape (B, C, D).
+    fake: Tensor of generated images, shape (B, C, D).
+    discriminator: A PyTorch model representing the discriminator.
+    device: Device to use for tensor computations (e.g., "cpu" or "cuda").
+
+    Returns:
+    A dictionary containing the discriminator loss and its components.
+    """
+    # Move tensors to the specified device
+    real = real
+    fake = fake
+
+    # Define loss function
+    criterion = nn.BCEWithLogitsLoss()
+
+    # Get discriminator outputs
+    real_preds = discriminator(real)
+    fake_preds = discriminator(fake.detach())
+
+    # Calculate individual losses
+    real_loss = criterion(real_preds, torch.ones_like(real_preds).to(real_preds.device))
+    fake_loss = criterion(fake_preds, torch.zeros_like(fake_preds).to(fake_preds.device))
+
+    # Combine losses with correct formulation
+    real_loss = (real_loss + fake_loss ) / 2
+    
+    
+    fake_preds = discriminator(fake)
+    fake_loss = criterion(fake_preds, torch.ones_like(fake_preds).to(fake_preds.device))
+
+    return (real_loss + fake_loss) / 2
+     
+    
+def wasserstein_loss_GAN(real, fake,  discriminator, lambda_gp=10,):
+    """
+    Calculates the Wasserstein loss with gradient penalty.
+
+    Args:
+    real: Batch of real images.
+    fake: Batch of fake images generated by the encoder.
+    lambda_gp: Gradient penalty coefficient.
+
+    Returns:
+    Tensor: The combined Wasserstein loss and gradient penalty.
+    """
+    # Wasserstein loss
+    real_scores = discriminator(real)
+    fake_scores = discriminator(fake)
+    wasserstein_loss_value = -(real_scores - fake_scores).mean()
+
+    # Gradient penalty
+    gradient_penalty = 0
+    if lambda_gp > 0:
+        # Sample random epsilon between real and fake data
+        alpha = torch.rand(real.size(0), 1, 1, 1, device=real.device)
+        interpolates = (alpha * real + (1 - alpha) * fake).detach()
+        interpolates.requires_grad = True
+
+        # Get gradients of the critic w.r.t. interpolates
+        scores = discriminator(interpolates)
+        gradients = torch.autograd.grad(outputs=scores, inputs=interpolates,
+                                        grad_outputs=torch.ones_like(scores),
+                                        create_graph=True)[0]
+
+        # Normalize gradients and calculate penalty
+        gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean() * lambda_gp
+
+    # Combine losses
+    return wasserstein_loss_value + gradient_penalty
+
+def contrastive_loss(X, Y, temperature=0.07):
+  """
+  Contrastive loss with softmax temperature implementation for 3D tensors.
+
+  Args:
+    X: Batch of anchor matrices of shape (B, C, D).
+    Y: Batch of positive matrices of shape (B, C, D).
+    temperature: Temperature parameter for softmax (default 0.07).
+
+  Returns:
+    Contrastive loss tensor.
+  """
+
+  # Check device compatibility
+  device = X.device
+
+  # Ensure normalization for valid cosine similarity
+  X_normalized = F.normalize(X, dim=2)  # Shape (B, C, D)
+  Y_normalized = F.normalize(Y, dim=2)  # Shape (B, C, D)
+
+  # Efficiently compute cosine similarity matrix
+  sim_matrix = torch.bmm(X_normalized, Y_normalized.permute(0, 2, 1))  # Shape (B, C, C)
+
+  # Compute log probabilities for positive pairs
+  log_probs_pos = F.log_softmax(sim_matrix / temperature, dim=1)  # Shape (B, C, C)
+
+  # Extract diagonal elements for positive pairs
+  log_probs_diag = torch.diagonal(log_probs_pos, dim1=1, dim2=2)  # Shape (B, C)
+
+  # Compute contrastive loss
+  loss = -torch.mean(log_probs_diag) / 2.0
+
+  return loss
+    
+
+def compute_normals(point_cloud):
+    # Assuming point_cloud has shape (B, N, 3)
+    B, N, _ = point_cloud.size()
+
+    # Step 1: Compute Neighbor Indices (using brute-force approach)
+    # You can customize the number of neighbors (k) based on your requirement
+    k = 10
+    dist_matrix = torch.cdist(point_cloud, point_cloud, p=2)
+    _, indices = torch.topk(dist_matrix, k=k, largest=False, sorted=True)
+
+    # Step 2: Calculate Normal Vectors
+    # Extract neighboring points
+    neighbor_points = torch.gather(point_cloud.unsqueeze(2).expand(-1, -1, k, -1), 1, indices.unsqueeze(-1).expand(-1, -1, -1, 3))
+
+    # Compute vectors from the central point to neighbors
+    vectors = neighbor_points - point_cloud.unsqueeze(2).expand(-1, -1, k, -1)
+
+    # Calculate cross-product to get normal vectors
+    normals = F.normalize(torch.cross(vectors[ :, :, 0, :], vectors[:, :, 1, :], dim=2), p=2, dim=2)
+
+    return normals
+
+
+def ordinal_chamfer_distance(source, target):
+    """
+    Calculate the Ordinal Chamfer Distance between two point clouds.
+
+    Parameters:
+    - source (torch.Tensor): Source point cloud with shape (B, C, N).
+    - target (torch.Tensor): Target point cloud with shape (B, C, M).
+
+    Returns:
+    - torch.Tensor: The Ordinal Chamfer Distance.
+    """
+
+    B, C, N = source.size()
+    _, _, M = target.size()
+
+    # Compute Euclidean distances between each pair of points
+    dist_source_target = torch.cdist(source.permute(0, 2, 1), target.permute(0, 2, 1), p=2)
+
+    # Find the nearest neighbor indices
+    nearest_target_idx = torch.argmin(dist_source_target, dim=2)
+    nearest_source_idx = torch.argmin(dist_source_target, dim=1)
+
+    # Use nearest neighbor indices to gather corresponding distances
+    chamfer_distance_source = torch.mean(torch.gather(dist_source_target, 2, nearest_target_idx.unsqueeze(2)), dim=1)
+    chamfer_distance_target = torch.mean(torch.gather(dist_source_target, 1, nearest_source_idx.unsqueeze(2)), dim=1)
+
+    # Compute the final Ordinal Chamfer Distance
+    ordinal_chamfer_distance = chamfer_distance_source + chamfer_distance_target
+
+    return ordinal_chamfer_distance.mean()
+
+
+def kl_divergence(mu, log_var, mu_target, log_var_target):
+  """
+  Calculates the KL divergence between two Gaussian distributions.
+
+  Args:
+    mu: torch.Tensor - Mean of the first distribution.
+    log_var: torch.Tensor - Log variance of the first distribution.
+    mu_target: torch.Tensor - Mean of the second distribution.
+    log_var_target: torch.Tensor - Log variance of the second distribution.
+
+  Returns:
+    torch.Tensor: KL divergence from the first distribution to the second.
+  """
+
+  # Calculate the difference in means
+  mu_diff = mu - mu_target
+
+  # Calculate the difference in log variances
+  log_var_diff = log_var - log_var_target
+
+  # KL divergence formula
+  kl_div = 0.5 * (log_var_diff - 1 + mu_diff.pow(2) + log_var_target.exp())
+
+  return kl_div
+
+
+
+def sinkhorn_emd_loss(p, q, epsilon=0.1, n_iterations=100):
+    """
+    Compute the Sinkhorn distance (Entropy Regularized Optimal Transport) between two probability distributions p and q.
+
+    Parameters:
+    - p (torch.Tensor): Probability distribution, shape (batch_size, num_points).
+    - q (torch.Tensor): Probability distribution, shape (batch_size, num_points).
+    - epsilon (float): Entropy regularization parameter.
+    - n_iterations (int): Number of Sinkhorn iterations.
+
+    Returns:
+    - sinkhorn_distance (torch.Tensor): Sinkhorn distance between p and q.
+    """
+    # Ensure distributions are non-negative
+    p.clamp_(min=0)
+    q.clamp_(min=0)
+
+    # Normalize distributions to sum to 1
+    p /= p.sum(dim=1, keepdim=True)
+    q /= q.sum(dim=1, keepdim=True)
+
+    # Get the device of the input distributions
+    device = p.device
+
+    # Move distributions to the same device
+    p, q = p.to(device), q.to(device)
+
+    # Compute cost matrix in-place
+    cost_matrix = torch.cdist(p, q, p=2)
+
+    # Initialize scaling factors u and v in-place
+    u = torch.ones_like(p[:, 0], device=device)
+    v = torch.ones_like(q[:, 0], device=device)
+
+    # Temporary tensors for intermediate results
+    temp_p_hat = torch.empty_like(p)
+    temp_q_hat = torch.empty_like(q)
+
+    # Sinkhorn iterations
+    for _ in range(n_iterations):
+        # Update dual variables u and v in-place
+        u.mul_(epsilon).add_(p.sum(dim=1, keepdim=True).log_())
+        v.mul_(epsilon).add_(q.sum(dim=1, keepdim=True).log_())
+
+        # Update coupling matrix in-place
+        K = torch.exp((u.unsqueeze(2) + v.unsqueeze(1) - cost_matrix) / epsilon, out=cost_matrix)
+        temp_p_hat.copy_(p).div_(K.sum(dim=2, keepdim=True).add_(1e-8))
+        temp_q_hat.copy_(q).div_(K.sum(dim=1, keepdim=True).add_(1e-8))
+
+    # Compute Sinkhorn distance in-place
+    sinkhorn_distance = torch.sum(temp_p_hat.mul_(cost_matrix)) + epsilon * torch.sum(temp_p_hat.mul_(temp_p_hat.log_().add_(1e-8))) + epsilon * torch.sum(temp_q_hat.mul_(temp_q_hat.log_().add_(1e-8)))
+
+    return sinkhorn_distance
+
+def earth_mover_distance(p, q):
+    """
+    Compute Earth Mover's Distance between two point clouds using Sinkhorn algorithm.
+    
+    Args:
+    pc1 (torch.Tensor): Point cloud 1, shape (B, N, 3).
+    pc2 (torch.Tensor): Point cloud 2, shape (B, M, 3).
+    
+    Returns:
+    emd_loss (torch.Tensor): Earth Mover's Distance loss.
+    """
+    """
+  Calculates the Earth Mover's Distance (EMD) between two point clouds.
+
+  Args:
+      p: First point cloud (tensor of shape [batch_size, num_points, dimension]).
+      q: Second point cloud (tensor of shape [batch_size, num_points, dimension]).
+      metric: Distance metric function (e.g., torch.nn.functional.pairwise_distance).
+
+  Returns:
+      EMD loss (tensor of shape [batch_size]).
+  """
+    batch_size, num_points, dim = p.shape
+  # Distance from each point in p to its nearest neighbor in q
+    dist1 = torch.min(torch.cdist(p, q), dim=2).values.unsqueeze(1)
+    # Distance from each point in q to its nearest neighbor in p (vice versa)
+    dist2 = torch.min(torch.cdist(q, p), dim=2).values.unsqueeze(1)
+    chamfer_loss = torch.mean(dist1 + dist2, dim=1).mean()  # Average over points
+    return chamfer_loss
+
+
+def kl_divergence_loss(mu, log_var, dim=1):
+    # Assuming mu and log_var are the mean and log-variance of your distribution
+    # Calculate KL divergence
+    kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp(), dim=dim)
+    kl_loss = torch.mean(kl_loss)
+
+    return kl_loss
+
+def kl_divergence_gaussians(mean1, var1, mean2, var2):
+    # Compute the log variance
+    
+    log_var1 = torch.log(var1 + 1e-8)  # Adding a small epsilon for numerical stability
+    log_var2 = torch.log(var2 + 1e-8)
+
+    # KL divergence computation
+    kl_div = 0.5 * (log_var2 - log_var1 + (var1 + (mean1 - mean2) ** 2) / var2 - 1)
+
+    # Sum the KL divergence over the dimensions (D)
+    kl_div = torch.sum(kl_div, dim=-1)
+
+    return kl_div.mean()
+
+def dcd_loss(pred_points, target_points, alpha):
+    """
+    Calculates DCD loss between two point clouds.
+
+    Args:
+        pred_points: Tensor (B, N, D) representing predicted point clouds.
+            - B: Batch size.
+            - N: Number of points in each point cloud.
+            - D: Dimensionality of points (usually 3 for XYZ coordinates).
+        target_points: Tensor (B, M, D) representing target point clouds.
+            - B: Batch size (should be same as pred_points).
+            - M: Number of points in each target point cloud.
+            - D: Dimensionality (should be same as pred_points).
+        alpha: Temperature scalar for the exponential term.
+
+    Returns:
+        dcd_loss: Tensor representing the DCD loss between the point clouds.
+    """
+
+    # Squared distances between each point in pred and target sets
+    dist_matrix = torch.cdist(pred_points, target_points, p=2.0)  # (B, N, M)
+
+    # Nearest neighbors for each point in pred and target sets
+    nearest_target_idx = torch.argmin(dist_matrix, dim=2)  # (B, N)
+    nearest_pred_idx = torch.argmin(dist_matrix, dim=1)  # (B, M)
+
+    # Number of points each target point is nearest neighbor to (avoid division by zero)
+    n_y = torch.bincount(nearest_target_idx.flatten(), minlength=target_points.shape[1]) + 1.0  # (M)
+
+    # Number of points each predicted point is nearest neighbor to (avoid division by zero)
+    n_x = torch.bincount(nearest_pred_idx.flatten(), minlength=pred_points.shape[1]) + 1.0  # (N)
+
+    # Weights for each point (normalized by number of nearest neighbors)
+    weight_y = 1.0 / n_y[nearest_target_idx]  # (B, N)
+    weight_x = 1.0 / n_x[nearest_pred_idx]  # (B, M)
+    weight_y = weight_y.unsqueeze(1)
+    weight_x = weight_x.unsqueeze(-1)
+    
+    # DCD loss terms
+    loss_term1 = torch.mean(dist_matrix * weight_y)
+    loss_term2 = torch.mean(dist_matrix * weight_x)
+
+    # Total DCD loss
+    dcd_loss = 0.5 * (loss_term1 + loss_term2)
+    return dcd_loss
+
+
+
+def info_cd_fixed(x, y):
+    d = torch.norm(x - y, dim=-1, p="fro")
+    return -torch.log(torch.exp(-0.5 * d)/(torch.sum(torch.exp(-0.5 * d) + 1e-7,dim=-1).unsqueeze(-1))**1e-7)
+
+def info_chamfer_distance(x, y):
+    
+    
+    dist_matrix = torch.cdist(x, y, p=2.0)
+    d1 = torch.min(dist_matrix, dim=1).values
+    d2 = torch.min(dist_matrix, dim=2).values
+
+    
+    distances1 = - torch.log(torch.exp(-0.5 * d1)/(torch.sum(torch.exp(-0.5 * d1) + 1e-7,dim=-1).unsqueeze(-1))**1e-7)
+    distances2 = - torch.log(torch.exp(-0.5 * d2)/(torch.sum(torch.exp(-0.5 * d2) + 1e-7,dim=-1).unsqueeze(-1))**1e-7)
+
+    return (torch.mean(distances1) + torch.mean(distances2)) / 2
+    
+
+class CustomChi2Loss(nn.Module):
+    def __init__(self, df=288, n=288):
+        super().__init__()
+        self.df = df
+        self.n = n
+
+        # Calculate CDF arguments in the constructor
+        chi2_dist = stats.chi2(df=self.df)
+        self.cdf_args_radii = torch.from_numpy(chi2_dist.ppf((np.arange(1, self.n + 1) - 0.5) / self.n))
+        self.cdf_args_distances = torch.from_numpy(chi2_dist.ppf((np.arange(1, self.n * (self.n - 1) // 2 + 1) - 0.5) / (self.n * (self.n - 1) // 2)))
+    
+    
+    def forward(self, points):
+       
+        if len(points.shape) == 2:
+            points = points.unsqueeze(0)
+        
+        b, n, d = points.shape
+
+        if n < self.n or d != self.df:
+            # Calculate CDF arguments for the current batch size
+            chi2_dist = stats.chi2(df=d)
+            self.cdf_args_radii = torch.from_numpy(chi2_dist.ppf((np.arange(1, n + 1) - 0.5) / n))
+            self.cdf_args_distances = torch.from_numpy(chi2_dist.ppf((np.arange(1, n * (n - 1) // 2 + 1) - 0.5) / (n * (n - 1) // 2)))
+            self.n = n
+            
+        indices = torch.randperm(n)[:self.n]
+        points = points[:, indices, :]
+        
+        # Calculate radii and pairwise distances
+        radii = torch.sum(points**2, dim=2)
+        pairwise_distances = torch.cdist(points, points, p=2)**2 / 2.0
+        mask = torch.triu(torch.ones((self.n, self.n), dtype=torch.bool), diagonal=1)
+        pairwise_distances = pairwise_distances[:, mask]
+
+        sorted_radii = torch.sort(radii, dim=1)[0]
+        sorted_distances = torch.sort(pairwise_distances, dim=1)[0]
+
+        # Calculate the cost function
+        cost_radii = torch.mean(torch.abs(sorted_radii - self.cdf_args_radii.to(points.device)))
+        cost_distances = torch.mean(torch.abs(sorted_distances - self.cdf_args_distances.to(points.device)))
+        total_cost = (cost_radii + cost_distances) / 2
+        return total_cost
+
+
+
+
+class DepthLoss(nn.Module):
+     
+    def __init__(self):
+         super().__init__()
+         with torch.autocast('cuda'):
+            # self.sobel_filter = nn.Conv2d(1, 2, kernel_size=3, padding=1, stride=1, bias=False)
+            self.sobel_x = torch.tensor([[1, 0, -1], [2, 0, -2], [1, 0, -1]], dtype=torch.float32)
+            self.sobel_y = torch.tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]], dtype=torch.float32)
+            # self.sobel_filter.weight.data = torch.cat((sobel_x.unsqueeze(0), sobel_y.unsqueeze(0)), dim=0)
+        
+            
+        #  self.ssim = SSIM(data_range=1.0, size_average=True, channel=1)
+         self.depth_func = MaskedMSELoss()
+         self.depth_func_log = MaskedLogloss()
+         self.l1smooth = nn.SmoothL1Loss()
+         
+    def ssim_loss(self, predicted, target):
+        ssim_loss = 1 - self.ssim(predicted, target)
+        return ssim_loss.mean()
+    
+    def berhu_loss(self, predicted, target, c=0.35):
+        diff = torch.abs(predicted - target)
+        c = torch.max(diff).item() * c
+        loss = torch.where(diff <= c, diff, (diff ** 2 + c ** 2) / (2 * c))
+        return loss.mean()
+    
+    def huber_loss(self, predicted, target, c=0.35):
+        
+        # return F.smooth_l1_loss(predicted, target, beta=(predicted - target).abs().max().item() * c)
+        delta = (predicted - target).abs().max().item() * c
+        diff = torch.abs(predicted - target)
+        loss = torch.where(diff <= delta, 0.5 * diff ** 2, delta * (diff - 0.5 * delta))
+        return loss.mean()
+        
+    def ruber_loss(self, predicted, target, c=0.35):
+        
+        diff = torch.abs(predicted - target)
+        sqrt = torch.sqrt(torch.clip(2 * c * diff - c ** 2, min=1e-8))
+        loss = torch.where(diff <= c, diff, sqrt)
+        return loss.mean()
+    
+    def mse_loss(self, predicted, target):
+        return F.mse_loss(predicted, target)
+    
+    # def inverse_sigmoid(self, x):
+    #     return torch.log((x + 1e-3) / (1 - x + 1e-3))   
+    def inverse_sigmoid(self, x):
+    # Clamp x to avoid log(0) issues
+        eps = 1e-7
+        x = torch.clamp(x, min=eps, max=1 - eps)
+        return - torch.log((1- x ) / x)     
+    
+    def ScaleInvariant(self, pred, target):
+        # Ensure no zero values for log calculation
+        pred = torch.clamp(pred, min=1e-6)
+        target = torch.clamp(target, min=1e-6)
+        
+        log_diff = torch.log(pred) - torch.log(target)
+        first_term = torch.mean(log_diff ** 2)
+        second_term = 0.5 * (torch.mean(log_diff) ** 2)
+        
+        loss = first_term - second_term
+        return loss
+    
+    def sobel_loss(self, predicted, target, gt_sprase, intensity=0.5):
+        
+        """
+        Compares depth map and grayscale image using absolute gradient difference.
+
+        Args:
+            depth_map: Tensor of shape (B, 1, H, W) representing the depth map.
+            gray_image: Tensor of shape (B, 1, H, W) representing the grayscale image.
+
+        Returns:
+            gradient_diff: Tensor of shape (B, 1, H, W) representing the absolute 
+                        difference between depth map and grayscale image gradients.
+        """
+        # Sobel filter for gradient calculation
+        
+        # Apply filter to get gradients
+        
+        self.sobel_x = self.sobel_x.to(predicted.device).to(predicted.dtype)
+        self.sobel_y = self.sobel_y.to(predicted.device).to(predicted.dtype)
+        
+        pred_x = F.conv2d(predicted, self.sobel_x.unsqueeze(0).unsqueeze(0), padding=1)
+        pred_y = F.conv2d(predicted, self.sobel_y.unsqueeze(0).unsqueeze(0), padding=1)
+        
+        pred_magnitude = torch.sqrt(pred_x ** 2 + pred_y ** 2 + 1e-8)
+    
+        target_x = F.conv2d(target, self.sobel_x.unsqueeze(0).unsqueeze(0), padding=1)
+        target_y = F.conv2d(target, self.sobel_y.unsqueeze(0).unsqueeze(0), padding=1)
+        
+        target_magnitude = torch.sqrt(target_x ** 2 + target_y ** 2 + 1e-8)
+        
+        # # Compute absolute difference between gradients
+        indices = torch.logical_and(gt_sprase == 0, torch.rand_like(gt_sprase) < intensity)
+        gradient_diff = (pred_magnitude - target_magnitude).abs()
+        gradient_diff = gradient_diff[indices]
+        gradient_diff = self.berhu_loss(gradient_diff, torch.zeros_like(gradient_diff))
+        return gradient_diff
+
+
+        
+
+    def depth_loss(self, predicted, target, filter_zeros=True, from_logits=False):
+        if filter_zeros:
+            indices = target  > 0
+            predicted = predicted[indices]
+            target = target[indices]
+            
+        if from_logits:
+            indices = torch.logical_and(args.depth_thresh <= target, target <= 1 - args.depth_thresh)
+            predicted = predicted[indices]
+            target = self.inverse_sigmoid(target[indices]).to(target.dtype)
+
+        return F.mse_loss(predicted, target)
+        
+         
+    
+    def forward(self, pred, target, gray_scale):
+        
+        pred = pred.to(torch.float32)
+        target = target.to(torch.float32)
+        return [self.depth_loss(pred, target)]
+
+
+class InfinityL1Loss(nn.Module):
+    
+    def __init__(self):
+        super().__init__()
+        self.loss_fn = nn.L1Loss()
+        self.thresh = args.sky_thresh
+        
+    def forward(self, pred, labels):
+        assert pred.dim() == labels.dim(), "inconsistent dimensions"
+        pred = pred.to(torch.float32)
+        pred = torch.clamp(pred, min=0, max=1)
+        pred[labels == 1] = args.false_sky_thresh - pred[labels == 1]
+        
+        return pred.mean()
+        
+        
+class AdjustedBCELoss(nn.Module):
+    
+    def __init__(self, thresh=5e-02) -> None:
+        super().__init__()
+        self.thresh = thresh
+        self.eps = 1e-6
+        
+    def forward(self, pred, target):
+        
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        # Mask out the content
+        pred = pred.to(torch.float32)
+        target = target.to(torch.float32)
+        
+        mask_1 = target == 1
+        pred[mask_1] = self.thresh - pred[mask_1]
+        pred = torch.clamp(pred, min=self.eps, max=1.0 - self.eps)
+      
+        loss = - torch.log(1 - pred)
+        loss = loss.mean()
+        return loss
+    
+class MaskedFocalLoss(nn.modules.loss._WeightedLoss):
+    ''' Focal loss for classification tasks on imbalanced datasets '''
+
+    def __init__(self, weight=None, gamma=2,reduction='mean'):
+        super().__init__(weight,reduction=reduction)
+        self.gamma = gamma
+        self.weight = weight #weight parameter will act as the alpha parameter to balance class weights
+        self.reduction = reduction
+        self.ce = nn.CrossEntropyLoss(ignore_index=-1)
+        self.eps = 1e-8
+
+    def forward(self, inputs, target):
+        
+        indices = target == 0
+        target[indices] = -1
+        
+        ce_loss = self.ce(inputs, target)
+        pt = torch.exp(-ce_loss)
+        focal_loss = ((1 - pt) ** self.gamma * ce_loss)
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
+    
+
+
+class MaskedLogloss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+        log_predicted_depth = torch.log(pred + 1e-6)
+        log_target_depth = torch.log(target + 1e-6)
+        return   F.mse_loss(log_predicted_depth, log_target_depth)
+    
+ 
+    
+class MaskedMSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+        diff = target - pred
+        diff = diff[valid_mask]
+        self.loss = (diff**2).mean()
+        return self.loss
+
+
+class MaskedL1Loss(nn.Module):
+    def __init__(self):
+        super(MaskedL1Loss, self).__init__()
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target>0).detach()
+        diff = target - pred
+        diff = diff[valid_mask]
+        self.loss = diff.abs().mean()
+        return self.loss
+
+class MaksedL1L2MedianLoss(nn.Module):
+    
+    def __init__(self, alpha=0.3):
+        super().__init__()
+        self.alpha = alpha
+        
+    def forward(self, pred, target):
+        
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target>0).detach()
+        diff = (target - pred)[valid_mask].abs()
+        med = torch.median(diff)
+        indices = diff <= med
+        loss = diff[indices].pow(2).mean() + diff[~indices].mean()
+        return loss
+
+
+class MaskedHuberLoss(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crieterion = torch.nn.HuberLoss()
+
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+
+        # Mask out the content
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+
+        return self.crieterion(pred, target)
+
+class MaskedSmoothL1Loss(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.criterion = nn.SmoothL1Loss(beta=0.4)
+        self.eps = 1e-8
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), f"inconsistent dimensions {pred.shape} != {target.shape}"
+        valid_mask = (target > 0).detach()
+
+        # Mask out the content
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+
+        return self.criterion(pred, target)
+    
+    
+class MaskedSSIMLoss(nn.Module):
+    
+    def __init__(self) -> None:
+        super().__init__()
+        self.criterion = SSIM(data_range=1.0, size_average=True, channel=1)
+    
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+        
+        old_shape = target.shape
+        target = target.cpu().detach().numpy().squeeze()
+        
+        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+        target = cv2.filter2D(target, -1, kernel).reshape(old_shape)
+        target = torch.from_numpy(target).cuda().type(pred.type())
+        
+        # Mask out the content
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+
+        return 1 - self.criterion(pred, target)
+
+class MaskedRMSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+        diff = target - pred
+        diff = diff[valid_mask]
+        self.loss = torch.sqrt((diff**2).mean())
+        return self.loss
+
+class MaskedBerHuLoss(nn.Module):
+    def __init__(self, thresh=0.3):
+        super().__init__()
+        self.thresh = thresh
+
+    def forward(self, pred, target):
+        assert pred.dim() == target.dim(), "inconsistent dimensions"
+        valid_mask = (target > 0).detach()
+
+        # Mask out the content
+        pred = pred[valid_mask]
+        target = target[valid_mask]
+        
+        diff = torch.abs(pred - target)
+        c = torch.max(diff).item() * self.thresh
+        loss = torch.where(diff <= c, diff, (diff ** 2 + c ** 2) / (2 * c))
+        return loss.mean()
+
+   
