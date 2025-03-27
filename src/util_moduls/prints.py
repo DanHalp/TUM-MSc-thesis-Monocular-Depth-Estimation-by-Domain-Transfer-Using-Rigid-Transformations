@@ -165,8 +165,7 @@ def visualize(model, test_dl):
         
         visited.add(name)
         
-        # print(f"{args.hashtags_prefix} Processing {name}")
-        # print(f"{args.hashtags_prefix} Proccessed {len(visited)}/{len(names)}")
+    
         if len(visited) == len(names):
             to_break = True
                 
@@ -185,13 +184,10 @@ def visualize(model, test_dl):
 
         # Lidar Groundtruth:
         lidar_gt = batch["gt"]["depth"]["lidar_depth"].cpu().numpy().squeeze()
-        # lidar_gt_enhanced = batch["gt"]["depth"]["lidar_depth_enhance"].cpu().numpy().squeeze()
         
         augmented_depth_noise = batch["gt"]["depth"]["augmented_depth"].cpu().numpy().squeeze()[0]
-    
         plt.imsave(str(curr_img_path / "lidar_gt.png"), lidar_gt, cmap="jet")
         plt.imsave(str(curr_img_path / "augmented_depth_noise.png"), augmented_depth_noise, cmap="jet")
-        # plt.imsave(str(curr_img_path / "lidar_gt_enhanced.png"), lidar_gt_enhanced, cmap="jet")
 
         buf = 100
         # lidar groundtruth on rgb
@@ -216,17 +212,7 @@ def visualize(model, test_dl):
         gt_img_with_lidar = gt_img_with_lidar[buf:h-buf, buf:w-buf]
         plt.imsave(str(curr_img_path / "augmented_depth_noise_on_rgb.png"), gt_img_with_lidar)
         
-        # # augmented orig depth on rgb
-        # gt_img_with_lidar =  orig_img.copy() / 255
-        # gt_colour = np.array(cv2.imread(str(curr_img_path / "augmented_depth_orig.png")))
-        # gt_colour = cv2.cvtColor(gt_colour, cv2.COLOR_BGR2RGB) / 255
-        # gt_colour = gt_colour.astype(np.float32)
-        # gt_img_with_lidar[augmented_depth_orig > 0] = gt_colour[augmented_depth_orig > 0]
-        # h, w = augmented_depth_orig.shape[:2]
-        
-        # gt_img_with_lidar = gt_img_with_lidar[buf:h-buf, buf:w-buf]
-        # plt.imsave(str(curr_img_path / "augmented_depth_orig_on_rgb.png"), gt_img_with_lidar)
-        
+      
   
         import torch.nn.functional as F
         with torch.no_grad():
@@ -255,10 +241,7 @@ def visualize(model, test_dl):
         depth_color = cv2.imread(str(curr_img_path / (pred_name + "-depth.png")))
         depth_color = cv2.cvtColor(depth_color, cv2.COLOR_BGR2RGB).astype(np.float32) / 255
   
-        
-        # Blend the colorized depth map with the RGB image
-        # blended = orig_img * 0.8 + depth_color * 0.75
-        # blended = blended / blended.max()
+      
         blended = cv2.addWeighted(orig_img.astype(depth_color.dtype), 0.8, depth_color, 0.75, 0)
         blended = blended / blended.max()
         plt.imsave(str(curr_img_path / "depth_on_rgb.png"), blended)
@@ -275,14 +258,7 @@ def visualize(model, test_dl):
         axs[1, 0].imshow(proj_pred, cmap="jet")
         axs[1, 1].imshow(gt_img_with_lidar, cmap="jet")
         
-        # diff = np.zeros_like(depth_pred)
-        # diff[lidar_gt > 0] = np.abs(depth_pred[lidar_gt > 0] - lidar_gt[lidar_gt > 0])
-        # med = np.median(diff[lidar_gt > 0])
-        # mean = np.mean(diff[lidar_gt > 0])
-        # diff[diff <= med] = diff[diff <= med] ** 2
-        # # rescale diff to [0, 1]
-        # diff = (diff - diff.min()) / (diff.max() - diff.min())
-        
+    
         diff = np.abs(rgb_pred- proj_pred)
         med = np.median(diff)
         mean = np.mean(diff)

@@ -10,22 +10,17 @@ sys.path.append(str(Path(os.path.abspath(__file__)).parents[3]))
 sys.path.append(str(Path(os.path.abspath(__file__)).parents[2]))
 sys.path.append(str(Path(os.path.abspath(__file__)).parents[1]))
 
-import shutil
 import torch
 import torchvision
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from util_moduls.args import args
-# from skimage.transform import resize
-import cv2
 import torch.nn.functional as F
 # from utils.ResizeRight.interp_methods import *
 from PIL import Image
 import torchvision.transforms as T
 from pathlib import Path
-import matplotlib
 from skimage import io
-import tifffile
 
 def add_noise(data, noise_std=0.4):
     
@@ -96,9 +91,7 @@ class NuscenesDataset(Dataset):
         self.bins = [torch.linspace(0, 1, N + 1) for N in args.num_bins[::-1]]
         self.spatial_sizes = [np.array(args.image_dimension) // 2 ** (i) for i in range(3)]
         
-        
-    # def __getitems__(self, index_list):
-    #     return self.__getitem__(index_list)
+
        
     def __getitem__(self, index):
         """
@@ -113,19 +106,6 @@ class NuscenesDataset(Dataset):
         name = self.list_with_all_files[index][6].split('/')[-1].split('.')[0]
         path = Path(args.dataset_path) / (name)
         
-        # For regular normalization purposes. I chose to scale all values to the  range of [0, 1] instead.
-        # transform_img = torchvision.transforms.Compose([
-        #                                                 # transform_resize,
-        #                                                 torchvision.transforms.Normalize(mean = [0.485, 0.456, 0.406],
-        #                                                 std = [0.229, 0.224, 0.225])])
-       
-
-        # To read from tiffiles
-        # gt_tensor = torch.from_numpy(tifffile.imread(path / "lidar_depth.tiff"))
-        # sky_seg = torch.from_numpy(tifffile.imread(path / "sky_seg.tiff"))
-        # original_image = torch.from_numpy(tifffile.imread(path / "original_image.tiff"))
-        # gt_tensor = torch.from_numpy(tifffile.imread(path / "lidar_depth.tiff"))
-        # gt_tensor = torch.from_numpy(tifffile.imread("/home/ubuntu/Datasets/thesis_data/00008_gt/lidar_depth.tiff"))
         gt_tensor = io.imread(str(path / "lidar_depth.tiff"))
         gt_tensor = torch.from_numpy(gt_tensor)
         
@@ -170,26 +150,9 @@ class NuscenesDataset(Dataset):
 from tqdm import tqdm
 def run():
     args.num_workers = 16
-
     dataloaders = make_dataloaders(batchsize=16, split="train")
     train_dl = dataloaders["train"]
-    
-    # orig_path = Path("/home/ubuntu/Datasets/thesis_data")
-    # png_path = Path("/home/ubuntu/DanHal/Dan_Halperin/CamRaDepth/thesis_data_png")
-    
-    start = time.time()
 
-    for batch in train_dl:
-        end = time.time()
-        print(batch["name"])
-        start = time.time()
-        
-        # load_path = png_path / name / "sky_seg.png"
-        # save_path = orig_path / name / "sky_seg.png"
-        # shutil.copy(load_path, save_path)
-            
-        # print(name)
-            
         
 
 if __name__ == "__main__":

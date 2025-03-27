@@ -716,11 +716,9 @@ def save_point_clouds_as_obj(point_clouds, folder_path, file_name):
         with open(file_path, 'w') as obj_file:
             for point in point_cloud:
                 obj_file.write(f"v {point[0]} {point[1]} {point[2]}\n")
-
         
         break
-    
-    
+
     
 def plot_loss_curves(train_loss_values, val_loss_values, save_path):
         """

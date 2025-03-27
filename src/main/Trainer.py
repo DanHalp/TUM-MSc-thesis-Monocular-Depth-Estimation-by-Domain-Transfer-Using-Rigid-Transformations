@@ -220,6 +220,7 @@ class Trainer:
             loss = loss / args.update_interval # Accumulated gradients need to be divided by the number of iterations
             self.scaler.scale(loss).backward()
             
+            ################# Debugging: Print the gradient's norm, to catch exploding gradients. #################
             
             # Print the gradients, to ensure that they don't explode - for debugging purposes
             # if not args.save_model:
@@ -402,35 +403,10 @@ if __name__ == "__main__":
     
     # For easily tweaking the arguments. One could also follow the more conventional way of passing arguments to the command line,
     
-    #  with torch.cuda.device(args.cuda_id):
-    #     Trainer(model=CamRaDepth).train_only_embedding()
-      
-    # like a medieval peasent.
-    # with torch.cuda.device(args.cuda_id):
     if args.run_mode == "train":
         Trainer(model=AE).train()
     elif args.run_mode == "test":
         Trainer(model=AE, mode=args.run_mode).test()
     else:
             raise ValueError("Invalid run mode. Please choose between 'train' and 'test'.")
-
-
-
-
-
-
-# TODO:
-# 1. Two stages: train stage_02 and converge, with detached rotaiton. Then, add the rgb decoder and share the manifold.
-# 2. rotations with weight maps.
-
-
-# Todo:
-
-
-
-
-
-
-
-# Once you've setteled on the best performing approach, check how the infinity loss influences the results
 
